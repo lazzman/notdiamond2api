@@ -1,16 +1,16 @@
 # notdiamond2api
 
-这是一个基于 Flask 的 聊天代理服务，用于将请求转发到 chat.notdiamond.ai 服务器。
+这是一个基于 Cloudflare Workers 的聊天代理服务，用于将请求转发到 chat.notdiamond.ai 服务器。
 
 ## 功能特点
 
-- 支持多种 AI 模的映射
+- 支持多种 AI 模型的映射
 - 处理流式和非流式响应
 - 兼容 OpenAI API 格式
-- 支持 Docker Compose 部署
-- 自动登录
-- 自动管理 Cookie
+- 支持多账号配置和自动轮询
+- 自动登录和令牌管理
 - Token 失效自动刷新
+- 账号异常自动切换
 - 一键无忧部署启动
 
 ## 支持的模型
@@ -29,66 +29,64 @@
 - llama-3.1-sonar-large-128k-online
 - mistral-large-2407
 
-## 快速开始
+## 部署配置
 
-1. 下载 `docker-compose.yml` 文件：
+### Cloudflare Workers 环境变量配置
 
-   使用 `wget` 命令：
+必需的环境变量：
+- `ACCOUNTS_CONFIG`：JSON 格式的账号配置数组，例如：
+  ```json
+  [
+    {"email": "account1@example.com", "password": "password1"},
+    {"email": "account2@example.com", "password": "password2"}
+  ]
+  ```
+  或者使用单账号配置：
+- `AUTH_EMAIL`：登录邮箱
+- `AUTH_PASSWORD`：登录密码
 
-   ```bash
-   wget https://raw.com/Jiabinone/notdiamond2api/main/docker-compose.yml
-   ```
-
-   或使用 `curl` 命令：
-
-   ```bash
-   curl -O https://raw.githubusercontent.com/Jiabinone/notdiamond2api/main/docker-compose.yml
-   ```
-
-2. 确保已经设置好 Docker 环境变量，并设置启动端口：
-   - `AUTH_EMAIL`：您的登录邮箱。
-   - `AUTH_PASSWORD`：您的登录密码。
-   - `PORT`：启动端口，默认为 3000。如需更改，请在 `docker-compose.yml` 中修改 `ports` 映射设置中的第一项。
-   - `AUTH_ENABLED`: 是否启用验证。
-   - `AUTH_TOKEN`: 使用的身份令牌。
-
-3. 使用 Docker Compose 启动：
-
-   ```
-    docker-compose up -d && docker-compose logs -f
-   ```
-
-4. 服务将在 `http://localhost:3000` 上运行
+可选的环境变量：
+- `AUTH_ENABLED`：是否启用 API 访问验证（true/false）
+- `AUTH_VALUE`：API 访问令牌（当 AUTH_ENABLED 为 true 时需要配置）
 
 ## API 接口
 
-- GET `/v1/models`：获取可用模型列表
-- POST `/v1/chat/completions`：发送聊天完成请求
+### 模型列表
+```http
+GET /v1/models
+```
+返回所有可用的模型列表。
 
+### 聊天完成
+```http
+POST /v1/chat/completions
+```
+发送聊天完成请求，支持流式和非流式响应。
+
+## 特性说明
+
+### 多账号支持
+- 支持配置多个账号，系统会自动在账号间轮询
+- 当某个账号请求失败时，自动切换到下一个账号
+- 保持每个账号的独立状态管理
+
+### 自动重试机制
+1. 首次请求失败时，尝试刷新令牌
+2. 令牌刷新失败时，尝试重新登录
+3. 当前账号完全失败时，自动切换到下一个账号
+4. 直到找到可用账号或所有账号都尝试失败
 
 ## 更新日志
-2024-11-12
+
+### 2024-11-13
+1. 添加多账号支持
+2. 优化账号轮询机制
+3. 改进错误处理和重试逻辑
+
+### 2024-11-12
 1. 更新模型映射
 
-2024-10-14
-1. 修复workers输出乱码的情况
-
-2024-10-10
-1. 修复Unauthorized的问题
-
-2024-10-09
-1. 修复workers部署失效问题
-   
-2024-10-08
-1. 修复docker部署失效问题
-
-2024-09-20
-1. 修复登录空值问题
-2. 添加 Cloudflare Workers 部署方式，支持 4 个环境变量：
-   - `AUTH_ENABLED`（可选）
-   - `AUTH_VALUE`（可选，需搭配 `AUTH_ENABLED`）
-   - `AUTH_EMAIL`（必填）
-   - `AUTH_PASSWORD`（必填）
+[之前的更新日志...]
 
 ## 许可证
 

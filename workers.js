@@ -1,4 +1,53 @@
 (() => {
+    // 直接使用 Cloudflare 的 JSON 类型环境变量
+    const ACCOUNTS = ACCOUNTS_CONFIG || [{
+        email: AUTH_EMAIL,
+        password: AUTH_PASSWORD
+    }];
+
+    // 验证账号配置
+    if (!ACCOUNTS || !ACCOUNTS.length) {
+        console.error('No valid accounts configured');
+        throw new Error('账号配置无效');
+    }
+
+    let currentAccountIndex = 0;
+    const accountStates = ACCOUNTS.map(() => ({
+        apiKey: null,
+        userInfo: null,
+        refreshToken: null
+    }));
+
+    function getCurrentAccount() {
+        return {
+            account: ACCOUNTS[currentAccountIndex],
+            state: accountStates[currentAccountIndex]
+        };
+    }
+
+    function rotateAccount() {
+        currentAccountIndex = (currentAccountIndex + 1) % ACCOUNTS.length;
+        return getCurrentAccount();
+    }
+
+    // 移除全局变量
+    // var API_KEY = null;
+    // var REFRESH_TOKEN = null;
+    // var USER_INFO = null;
+
+    // 账号状态管理函数
+    function setAPIKey(key) {
+        accountStates[currentAccountIndex].apiKey = key;
+    }
+
+    function setUserInfo(info) {
+        accountStates[currentAccountIndex].userInfo = info;
+    }
+
+    function setRefreshToken(token) {
+        accountStates[currentAccountIndex].refreshToken = token;
+    }
+
     // src/model.js
     var MODEL_INFO = {
         "gpt-4o": {
@@ -74,20 +123,6 @@
         return payload;
     }
 
-    // src/config.js
-    var API_KEY = null;
-    var REFRESH_TOKEN = null;
-    var USER_INFO = null;
-    function setAPIKey(key) {
-        API_KEY = key;
-    }
-    function setUserInfo(info) {
-        USER_INFO = info;
-    }
-    function setRefreshToken(token) {
-        REFRESH_TOKEN = token;
-    }
-
     // src/auth.js
     async function fetchApiKey() {
         try {
@@ -122,18 +157,19 @@
     }
     async function fetchLogin() {
         try {
-            if (API_KEY === null) {
+            const { account, state } = getCurrentAccount();
+            if (state.apiKey === null) {
                 setAPIKey(await fetchApiKey());
             }
             const url = "https://spuckhogycrxcbomznwo.supabase.co/auth/v1/token?grant_type=password";
             const headers = {
-                "apikey": API_KEY,
+                "apikey": state.apiKey,
                 "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                 "Content-Type": "application/json"
             };
             const data = {
-                "email": AUTH_EMAIL,
-                "password": AUTH_PASSWORD,
+                "email": account.email,
+                "password": account.password,
                 "gotrue_meta_security": {}
             };
             const loginResponse = await fetch(url, {
@@ -157,20 +193,21 @@
     }
     async function refreshUserToken() {
         try {
-            if (API_KEY === null) {
+            const { state } = getCurrentAccount();
+            if (state.apiKey === null) {
                 setAPIKey(await fetchApiKey());
             }
-            if (!USER_INFO) {
+            if (!state.userInfo) {
                 await fetchLogin();
             }
             const url = "https://spuckhogycrxcbomznwo.supabase.co/auth/v1/token?grant_type=refresh_token";
             const headers = {
-                "apikey": API_KEY,
+                "apikey": state.apiKey,
                 "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                 "Content-Type": "application/json"
             };
             const data = {
-                "refresh_token": REFRESH_TOKEN
+                "refresh_token": state.refreshToken
             };
             const response = await fetch(url, {
                 method: "POST",
@@ -192,11 +229,12 @@
         }
     }
     async function getJWTValue() {
-        if (USER_INFO.access_token) {
-            return USER_INFO.access_token;
+        const { state } = getCurrentAccount();
+        if (state.userInfo?.access_token) {
+            return state.userInfo.access_token;
         } else {
             const loginSuccessful = await fetchLogin();
-            return loginSuccessful ? USER_INFO.access_token : null;
+            return loginSuccessful ? state.userInfo.access_token : null;
         }
     }
 
@@ -220,6 +258,8 @@
             return respondWithOptions(event);
         } else if (url.pathname === "/v1/chat/completions") {
             return handleCompletions(event);
+        } else if (url.pathname === "/v1/models") {
+            return handleModels(event);
         } else {
             return respondWithNotFound(event);
         }
@@ -254,12 +294,25 @@
         }));
     }
     async function validateUser() {
-        if (!USER_INFO) {
+        const { state } = getCurrentAccount();
+        if (!state.userInfo) {
             if (!await fetchLogin()) {
+                // 如果当前账号登录失败，尝试其他账号
+                const initialIndex = currentAccountIndex;
+                do {
+                    rotateAccount();
+                    if (await fetchLogin()) {
+                        console.log(`成功使用账号 ${currentAccountIndex + 1} 登录`);
+                        console.log("Refresh Token: ", state.refreshToken);
+                        return true;
+                    }
+                } while (currentAccountIndex !== initialIndex);
+                
+                console.error("所有账号登录均失败");
                 return false;
             }
-            console.log("\u521D\u59CB\u5316\u6210\u529F");
-            console.log("Refresh Token: ", REFRESH_TOKEN);
+            console.log(`初始化账号 ${currentAccountIndex + 1} 成功`);
+            console.log("Refresh Token: ", state.refreshToken);
         }
         return true;
     }
@@ -297,25 +350,34 @@
         }
     }
     async function makeRequest(payload, stream, model) {
-        let headers = await createHeaders();
-        let response = await sendRequest(payload, headers, stream, model);
-        if (!response.headers || response.ok && response.headers.get("Content-Type") === "text/event-stream") {
-            return response;
-        }
-        await refreshUserToken();
-        headers = await createHeaders();
-        response = await sendRequest(payload, headers, stream, model);
-        if (!response.headers || response.ok && response.headers.get("Content-Type") === "text/event-stream") {
-            return response;
-        }
-        await fetchLogin();
-        headers = await createHeaders();
-        response = await sendRequest(payload, headers, stream, model);
-        if (!response.headers || response.ok && response.headers.get("Content-Type") === "text/event-stream") {
-            return response;
-        }
-        response.status = 401;
-        return response;
+        const initialIndex = currentAccountIndex;
+        do {
+            const { state } = getCurrentAccount();
+            
+            // 第一次尝试
+            let headers = await createHeaders();
+            let response = await sendRequest(payload, headers, stream, model);
+            if (isValidResponse(response)) return response;
+
+            // 尝试刷新令牌
+            if (await refreshUserToken()) {
+                headers = await createHeaders();
+                response = await sendRequest(payload, headers, stream, model);
+                if (isValidResponse(response)) return response;
+            }
+
+            // 尝试重新登录
+            if (await fetchLogin()) {
+                headers = await createHeaders();
+                response = await sendRequest(payload, headers, stream, model);
+                if (isValidResponse(response)) return response;
+            }
+
+            // 切换到下一个账号
+            rotateAccount();
+        } while (currentAccountIndex !== initialIndex);
+
+        return new Response("All accounts failed", { status: 401 });
     }
     async function sendRequest(payload, headers, stream, model) {
         const url = "https://not-diamond-workers.t7-cc4.workers.dev/stream-message";
@@ -459,6 +521,44 @@
         const promptTokens = calculatePromptTokens(payload.messages);
         const openaiResponse = createOpenAIResponse(fullContent, model, promptTokens, completionTokens);
         return new Response(JSON.stringify(openaiResponse), { headers: response.headers });
+    }
+    function isValidResponse(response) {
+        return !response.headers || 
+               (response.ok && response.headers.get("Content-Type") === "text/event-stream");
+    }
+    function handleModels(event) {
+        if (AUTH_ENABLED) {
+            const authHeader = event.request.headers.get("Authorization");
+            const isValid = authHeader === `Bearer ${AUTH_VALUE}` || authHeader === AUTH_VALUE;
+            if (!isValid) {
+                return event.respondWith(new Response("Unauthorized", {
+                    status: 401,
+                    headers: { "Access-Control-Allow-Origin": "*" }
+                }));
+            }
+        }
+
+        const models = Object.entries(MODEL_INFO).map(([id, info]) => ({
+            id,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: info.provider,
+            permission: [],
+            root: id,
+            parent: null,
+        }));
+
+        const response = {
+            object: "list",
+            data: models
+        };
+
+        return event.respondWith(new Response(JSON.stringify(response), {
+            headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            }
+        }));
     }
 })();
 //# sourceMappingURL=index.js.map
